@@ -9,7 +9,7 @@ from conexion import obtener_conexion_moderna, obtener_conexion_legacy
 print("--- ENROLAMIENTO BIOMETRICO ---")
 
 if len(sys.argv) > 1:
-    # Modo automatico: el Sistema Legacy ya valido al usuario antes de llamar este script
+    # el Sistema Legacy ya valido al usuario antes de llamar este script
     usuario_id = sys.argv[1]
     print(f"ID {usuario_id} recibido desde el Sistema Legacy. Saltando validacion de credenciales.")
 

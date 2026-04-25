@@ -7,17 +7,21 @@ import sys
 from conexion import obtener_conexion_moderna, obtener_conexion_legacy
 
 def calcular_distancia_coseno(vec1, vec2):
-    """Compara dos vectores faciales. Cuanto mas cercano a 0, mas similar es el rostro."""
     a = np.dot(vec1, vec2)
     b = np.linalg.norm(vec1) * np.linalg.norm(vec2)
     if b == 0:
         return 1.0
     return 1 - (a / b)
 
-print("--- INICIO DE SESION BIOMETRICO ---")
-print("No necesitas usuario ni contrasena. Solo tu rostro.")
+if len(sys.argv) < 2:
+    print("Error: se requiere el ID del cliente como argumento.")
+    sys.exit(1)
 
-# Capturar el rostro en vivo
+id_cliente_objetivo = sys.argv[1]
+
+print("--- INICIO DE SESION BIOMETRICO ---")
+print(f"Verificando identidad para ID: {id_cliente_objetivo}")
+
 captura = cv2.VideoCapture(0)
 if not captura.isOpened():
     print("Error: No se pudo abrir la camara.")
@@ -30,11 +34,9 @@ vector_en_vivo = None
 while True:
     exito, frame = captura.read()
     if not exito:
-        print("Error: Fallo al leer el frame de la camara.")
         break
 
     cv2.imshow('Login Biometrico - Presione C para ingresar', frame)
-
     tecla = cv2.waitKey(1) & 0xFF
 
     if tecla == ord('c'):
@@ -47,13 +49,13 @@ while True:
                 enforce_detection=True
             )
             vector_en_vivo = resultado_ia[0]["embedding"]
-            print("Rostro capturado. Buscando coincidencias...")
+            print("Rostro capturado. Verificando contra el ID registrado...")
             break
         except Exception as e:
             print(f"No se detecto un rostro ({e}). Intente de nuevo.")
 
     elif tecla == ord('q'):
-        print("Login cancelado por el usuario.")
+        print("Login cancelado.")
         break
 
 captura.release()
@@ -66,7 +68,7 @@ if not vector_en_vivo:
     print("ACCESO DENEGADO. No se capturo ningun rostro.")
     sys.exit(1)
 
-# Buscar coincidencia en la Base de Datos Moderna
+# Buscar SOLO el vector del ID especifico, no todos
 conn_moderna = obtener_conexion_moderna()
 if not conn_moderna:
     print("Error: No se pudo conectar a la BD Moderna.")
@@ -74,55 +76,45 @@ if not conn_moderna:
 
 cursor_moderna = conn_moderna.cursor()
 cursor_moderna.execute(
-    "SELECT legacy_cliente_id, vector_facial FROM credenciales_faciales WHERE activo = True"
+    "SELECT vector_facial FROM credenciales_faciales WHERE legacy_cliente_id = %s AND activo = True",
+    (id_cliente_objetivo,)
 )
-registros = cursor_moderna.fetchall()
+registro = cursor_moderna.fetchone()
 cursor_moderna.close()
 conn_moderna.close()
 
-if not registros:
-    print("ACCESO DENEGADO. No hay rostros registrados en el sistema.")
+if not registro:
+    print("ACCESO DENEGADO. No hay rostro registrado para este ID.")
     sys.exit(1)
 
-cliente_match_id = None
-UMBRAL_DISTANCIA = 0.25
+vector_guardado = json.loads(registro[0])
+distancia = calcular_distancia_coseno(vector_en_vivo, vector_guardado)
+print(f"Distancia calculada: {distancia:.4f}")
 
-for registro in registros:
-    id_legacy = registro[0]
-    vector_guardado = json.loads(registro[1])
-    distancia = calcular_distancia_coseno(vector_en_vivo, vector_guardado)
-    print(f"Comparando con ID {id_legacy} - Distancia: {distancia:.4f}")
+UMBRAL_DISTANCIA = 0.7
 
-    if distancia < UMBRAL_DISTANCIA:
-        cliente_match_id = id_legacy
-        break
-
-# Inyeccion de estado en la BD Legacy
-if cliente_match_id:
-    print(f"Rostro reconocido. Corresponde al ID Legacy: {cliente_match_id}")
+if distancia < UMBRAL_DISTANCIA:
+    print(f"Rostro verificado para ID: {id_cliente_objetivo}")
     print("Modificando ESTADO_SESIONES en la BD Legacy...")
 
     conn_legacy = obtener_conexion_legacy()
     if not conn_legacy:
-        print("Error: No se pudo conectar a la BD Legacy para actualizar sesion.")
+        print("Error: No se pudo conectar a la BD Legacy.")
         sys.exit(1)
 
     try:
         cursor_legacy = conn_legacy.cursor()
-        sql_update = "UPDATE ESTADO_SESIONES SET SESION_ACTIVA = True WHERE ID_CLIENTE = %s"
-        cursor_legacy.execute(sql_update, (cliente_match_id,))
+        sql_update = "UPDATE ESTADO_SESIONES SET SESION_ACTIVA = True, METODO_ACCESO = 'BIOMETRICO' WHERE ID_CLIENTE = %s"
+        cursor_legacy.execute(sql_update, (id_cliente_objetivo,))
         conn_legacy.commit()
         cursor_legacy.close()
         conn_legacy.close()
-
         print("ACCESO CONCEDIDO. El sistema Legacy ahora reconoce la sesion activa.")
         sys.exit(0)
-
     except Exception as e:
-        print(f"Error al actualizar la BD Legacy: {e}")
+        print(f"Error al actualizar BD Legacy: {e}")
         conn_legacy.close()
         sys.exit(1)
-
 else:
-    print("ACCESO DENEGADO. Rostro no reconocido en el sistema.")
+    print("ACCESO DENEGADO. Rostro no coincide con el ID proporcionado.")
     sys.exit(1)
